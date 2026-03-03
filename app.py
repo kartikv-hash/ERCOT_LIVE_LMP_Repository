@@ -8,34 +8,36 @@ st.set_page_config(page_title="ERCOT Live LMP Tracker", layout="wide")
 st.title("⚡ ERCOT Real-Time LMP Dashboard")
 st.markdown("Live 5-minute Locational Marginal Pricing directly from the ERCOT market.")
 
-# 2. Fetch Data (Cached so it doesn't overload the API every time you click a button)
-@st.cache_data(ttl=300) # Cache clears every 5 minutes (300 seconds)
+# 2. Fetch Data
+@st.cache_data(ttl=300) # Cache clears every 5 minutes
 def load_live_ercot_data():
-    # Fix 1: Capitalize only the 'E' in Ercot
     ercot = gridstatus.Ercot()
-    
-    # Fix 2: Remove the market parameter; it defaults to 5-minute Real-Time
     df = ercot.get_lmp(date="today")
-    
     return df
 
 with st.spinner("Fetching live ERCOT data..."):
     df_live = load_live_ercot_data()
 
-# 3. Data Filtering (Let's focus on the major Hubs to keep the chart clean)
-hubs_only = df_live[df_live['Location Type'] == 'HUB']
+# 3. Data Filtering (Fault-tolerant Hub selection)
+if 'Location Type' in df_live.columns:
+    # Look for 'hub' regardless of how it is capitalized
+    hubs_only = df_live[df_live['Location Type'].str.lower() == 'hub']
+else:
+    # Fallback: ERCOT hubs usually start with 'HB_' (e.g., HB_NORTH)
+    hubs_only = df_live[df_live['Location'].str.startswith('HB_')]
 
-# Create a multiselect box so you can choose which hubs to view
 available_hubs = hubs_only['Location'].unique()
-selected_hubs = st.multiselect("Select Hubs to Graph:", available_hubs, default=available_hubs[:3])
+
+# Provide a default selection only if there are hubs available to select
+default_selections = available_hubs[:3] if len(available_hubs) >= 3 else available_hubs
+selected_hubs = st.multiselect("Select Hubs to Graph:", available_hubs, default=default_selections)
 
 # Filter dataframe based on your selection
 df_filtered = hubs_only[hubs_only['Location'].isin(selected_hubs)]
 
-# 4. Visualization (Replacing Excel)
+# 4. Visualization
 st.subheader("Live Pricing Trends")
 if not df_filtered.empty:
-    # Plotly makes highly interactive charts (zoom, pan, hover)
     fig = px.line(
         df_filtered, 
         x="Time", 
@@ -48,6 +50,15 @@ if not df_filtered.empty:
 else:
     st.warning("Please select at least one hub to display the graph.")
 
-# 5. Show the Raw Data (The Repository View)
+# 5. Show the Raw Data (Dynamically checking columns to prevent KeyErrors)
 st.subheader("Raw Data Extract")
-st.dataframe(df_filtered[['Time', 'Location', 'LMP', 'Energy', 'Congestion', 'Loss']], use_container_width=True)
+
+# Start with the core columns we know ERCOT always has
+cols_to_show = ['Time', 'Location', 'LMP']
+
+# Add these extra columns only if ERCOT actually provided them today
+for optional_col in ['Energy', 'Congestion', 'Loss', 'Location Type']:
+    if optional_col in df_filtered.columns:
+        cols_to_show.append(optional_col)
+
+st.dataframe(df_filtered[cols_to_show], use_container_width=True)
