@@ -11,9 +11,12 @@ st.markdown("Live 5-minute Locational Marginal Pricing directly from the ERCOT m
 # 2. Fetch Data (Cached so it doesn't overload the API every time you click a button)
 @st.cache_data(ttl=300) # Cache clears every 5 minutes (300 seconds)
 def load_live_ercot_data():
-    ercot = gridstatus.ERCOT()
-    # Fetch today's live 5-minute data
-    df = ercot.get_lmp(date="today", market="REAL_TIME_5_MIN")
+    # Fix 1: Capitalize only the 'E' in Ercot
+    ercot = gridstatus.Ercot()
+    
+    # Fix 2: Remove the market parameter; it defaults to 5-minute Real-Time
+    df = ercot.get_lmp(date="today")
+    
     return df
 
 with st.spinner("Fetching live ERCOT data..."):
