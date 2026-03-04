@@ -22,24 +22,21 @@ HUBS = ["HB_BUSAVG", "HB_HOUSTON", "HB_NORTH", "HB_PAN", "HB_SOUTH", "HB_WEST"]
 
 # ── ERCOT Fetch ───────────────────────────────────────────────
 def get_ercot_token() -> str:
-    """Get a Bearer token from ERCOT using username + password."""
+    """Get Bearer token from apiexplorer.ercot.com (Public API portal)."""
     r = requests.post(
-        "https://ercotb2c.b2clogin.com/ercotb2c.onmicrosoft.com/B2C_1_ROPC_Auth/oauth2/v2.0/token",
-        data={
-            "grant_type":    "password",
-            "username":      st.secrets["ERCOT_USERNAME"],
-            "password":      st.secrets["ERCOT_PASSWORD"],
-            "response_type": "id_token",
-            "scope":         "openid fec253ea-0d06-4272-a5e6-b478babc540c offline_access",
-            "client_id":     "fec253ea-0d06-4272-a5e6-b478babc540c",
+        "https://apiexplorer.ercot.com/api/oauth/client_credentials/accesstoken",
+        params={"grant_type": "client_credentials"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Ocp-Apim-Subscription-Key": st.secrets["ERCOT_API_KEY"],
         },
         timeout=30,
     )
     r.raise_for_status()
-    return r.json()["id_token"]
+    return r.json()["access_token"]
 
 def fetch_ercot(delivery_date: str) -> pd.DataFrame:
-    url = "https://api.ercot.com/api/public-reports/np6-905-cd/spp_node_zone_hub"
+    url = "https://apiexplorer.ercot.com/api/public-reports/np6-905-cd/spp_node_zone_hub"
     params = {
         "deliveryDateFrom": delivery_date,
         "deliveryDateTo":   delivery_date,
@@ -48,7 +45,7 @@ def fetch_ercot(delivery_date: str) -> pd.DataFrame:
     }
     token = get_ercot_token()
     headers = {
-        "Ocp-Apim-Subscription-Key": st.secrets.get("ERCOT_API_KEY", ""),
+        "Ocp-Apim-Subscription-Key": st.secrets["ERCOT_API_KEY"],
         "Authorization": f"Bearer {token}",
     }
     r = requests.get(url, headers=headers, params=params, timeout=30)
