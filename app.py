@@ -17,35 +17,28 @@ supabase = get_supabase()
 
 # ── ERCOT Data Access Portal ─────────────────────────────────
 # No API key needed — public CSV downloads
-ERCOT_PORTAL = "https://www.ercot.com/misapp/servlets/IceDocListJsonWS"
-ERCOT_FILE   = "https://www.ercot.com/misapp/servlets/IceDocFetch.exe"
-DOC_TYPE     = "NP4-183-CD"  # DAM Hourly LMPs
+ERCOT_DAP = "https://www.ercot.com/misapp/GetReports.do"
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
-
-# ── Fetch file list from ERCOT portal ────────────────────────
-def get_file_list(doc_type: str = DOC_TYPE) -> pd.DataFrame:
+def get_file_list() -> pd.DataFrame:
     r = requests.get(
-        ERCOT_PORTAL,
-        params={"reportTypeId": doc_type},
+        ERCOT_DAP,
+        params={"reportTypeId": "12331", "documentType": "csv"},
         headers=HEADERS,
         timeout=30,
     )
     r.raise_for_status()
-    docs = r.json().get("ListDocsByRptTypeRes", {}).get("DocumentList", [])
     rows = []
-    for d in docs:
-        rows.append({
-            "doc_id":    d.get("Document", {}).get("DocID"),
-            "friendly":  d.get("Document", {}).get("FriendlyName"),
-            "posted":    d.get("Document", {}).get("PublicationDate"),
-        })
-    return pd.DataFrame(rows)
+    import re
+    # Parse doc IDs and dates from HTML response
+    matches = re.findall(r'docId=(\d+).*?(\d{4}-\d{2}-\d{2})', r.text, re.DOTALL)
+    for doc_id, date in matches:
+        rows.append({"doc_id": doc_id, "posted": date})
+    return pd.DataFrame(rows).drop_duplicates("posted").head(30)
 
 # ── Download and parse one CSV file ─────────────────────────
 def download_csv(doc_id: str) -> pd.DataFrame:
     r = requests.get(
-        ERCOT_FILE,
+        "https://www.ercot.com/misapp/servlets/IceDocFetch.exe",
         params={"docId": doc_id},
         headers=HEADERS,
         timeout=60,
@@ -155,16 +148,12 @@ with st.sidebar:
 
     if "files" in st.session_state:
         files = st.session_state["files"]
-        st.sidebar.code(str(files.columns.tolist()) + "\n" + str(files.head(2)))
-        # Use whatever columns exist
-        if "posted" in files.columns:
-            files["label"] = files["posted"].str[:10]
+        if files.empty:
+            st.warning("No files found. ERCOT portal may be unavailable.")
         else:
-            files["label"] = files.iloc[:, 1].astype(str).str[:10]
-        if "doc_id" not in files.columns:
-            files["doc_id"] = files.iloc[:, 0]
-        selected = st.selectbox("Select Date to Fetch", files["label"].tolist())
-        doc_id = files[files["label"] == selected]["doc_id"].values[0]
+            files["label"] = files["posted"].str[:10]
+            selected = st.selectbox("Select Date to Fetch", files["label"].tolist())
+            doc_id = files[files["label"] == selected]["doc_id"].values[0]
 
         if st.button("⬇️ Fetch & Save to Supabase", type="primary", use_container_width=True):
             with st.spinner(f"Downloading {selected}..."):
