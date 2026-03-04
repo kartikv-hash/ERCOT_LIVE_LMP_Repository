@@ -19,30 +19,29 @@ ERCOT_URL = "https://api.ercot.com/api/public-reports/np4-183-cd/dam_hourly_lmp"
 
 # ── Fetch from ERCOT ─────────────────────────────────────────
 def get_ercot_token() -> str:
-    """Get Bearer token from ERCOT B2C using username + password."""
+    """Get Bearer token from apiexplorer.ercot.com portal."""
     r = requests.post(
-        "https://ercotb2c.b2clogin.com/ercotb2c.onmicrosoft.com/B2C_1_ROPC_Auth/oauth2/v2.0/token",
+        "https://apiexplorer.ercot.com/api/oauth2/v2.0/token",
         data={
-            "grant_type":    "password",
-            "username":      st.secrets["ERCOT_USERNAME"],
-            "password":      st.secrets["ERCOT_PASSWORD"],
-            "response_type": "id_token",
-            "scope":         "openid fec253ea-0d06-4272-a5e6-b478babc540c offline_access",
-            "client_id":     "fec253ea-0d06-4272-a5e6-b478babc540c",
+            "grant_type": "password",
+            "username":   st.secrets["ERCOT_USERNAME"],
+            "password":   st.secrets["ERCOT_PASSWORD"],
+            "scope":      "openid",
         },
         timeout=30,
     )
-    st.sidebar.code(f"Token status: {r.status_code}\n{r.text[:200]}")
-    r.raise_for_status()
+    st.sidebar.code(f"Token status: {r.status_code}\n{r.text[:300]}")
+    if r.status_code != 200:
+        # Try without token — subscription key only
+        return None
     data = r.json()
     return data.get("id_token") or data.get("access_token")
 
 def fetch_ercot(delivery_date: str) -> pd.DataFrame:
     token = get_ercot_token()
-    headers = {
-        "Ocp-Apim-Subscription-Key": st.secrets["ERCOT_PRIMARY_KEY"],
-        "Authorization": f"Bearer {token}",
-    }
+    headers = {"Ocp-Apim-Subscription-Key": st.secrets["ERCOT_PRIMARY_KEY"]}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     params  = {
         "deliveryDateFrom": delivery_date,
         "deliveryDateTo":   delivery_date,
