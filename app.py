@@ -3,6 +3,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import requests
+import zipfile
+import io
 from datetime import datetime, timedelta
 from supabase import create_client
 
@@ -13,58 +15,75 @@ def get_supabase():
 
 supabase = get_supabase()
 
-# ── ERCOT Config ─────────────────────────────────────────────
-# Endpoint: DAM Hourly LMPs (NP4-183-CD) — confirmed in your subscription
-ERCOT_URL = "https://api.ercot.com/api/public-reports/np4-183-cd/dam_hourly_lmp"
+# ── ERCOT Data Access Portal ─────────────────────────────────
+# No API key needed — public CSV downloads
+ERCOT_PORTAL = "https://www.ercot.com/misapp/servlets/IceDocListJsonWS"
+ERCOT_FILE   = "https://www.ercot.com/misapp/servlets/IceDocFetch.exe"
+DOC_TYPE     = "NP4-183-CD"  # DAM Hourly LMPs
 
-# ── Fetch from ERCOT ─────────────────────────────────────────
-def get_ercot_token() -> str:
-    """Get Bearer token from apiexplorer.ercot.com portal."""
-    r = requests.post(
-        "https://apiexplorer.ercot.com/api/oauth2/v2.0/token",
-        data={
-            "grant_type": "password",
-            "username":   st.secrets["ERCOT_USERNAME"],
-            "password":   st.secrets["ERCOT_PASSWORD"],
-            "scope":      "openid",
-        },
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+# ── Fetch file list from ERCOT portal ────────────────────────
+def get_file_list(doc_type: str = DOC_TYPE) -> pd.DataFrame:
+    r = requests.get(
+        ERCOT_PORTAL,
+        params={"reportTypeId": doc_type},
+        headers=HEADERS,
         timeout=30,
     )
-    st.sidebar.code(f"Token status: {r.status_code}\n{r.text[:300]}")
-    if r.status_code != 200:
-        # Try without token — subscription key only
-        return None
-    data = r.json()
-    return data.get("id_token") or data.get("access_token")
-
-def fetch_ercot(delivery_date: str) -> pd.DataFrame:
-    token = get_ercot_token()
-    headers = {"Ocp-Apim-Subscription-Key": st.secrets["ERCOT_PRIMARY_KEY"]}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    params  = {
-        "deliveryDateFrom": delivery_date,
-        "deliveryDateTo":   delivery_date,
-        "size":             10000,
-    }
-    r = requests.get(ERCOT_URL, headers=headers, params=params, timeout=30)
-    st.sidebar.code(f"Status: {r.status_code}\n{r.text[:300]}", language="json")
     r.raise_for_status()
-
+    docs = r.json().get("ListDocsByRptTypeRes", {}).get("DocumentList", [])
     rows = []
-    for rec in r.json().get("data", []):
+    for d in docs:
         rows.append({
-            "timestamp":     delivery_date + "T" + f"{int(rec.get('hourEnding', 1)):02d}:00:00",
-            "hub":           rec.get("busName", "UNKNOWN"),
-            "lmp":           float(rec.get("LMP", 0)),
-            "delivery_date": delivery_date,
-            "delivery_hour": int(rec.get("hourEnding", 1)),
-            "interval":      1,
+            "doc_id":    d.get("Document", {}).get("DocID"),
+            "friendly":  d.get("Document", {}).get("FriendlyName"),
+            "posted":    d.get("Document", {}).get("PublicationDate"),
         })
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+    return pd.DataFrame(rows)
+
+# ── Download and parse one CSV file ─────────────────────────
+def download_csv(doc_id: str) -> pd.DataFrame:
+    r = requests.get(
+        ERCOT_FILE,
+        params={"docId": doc_id},
+        headers=HEADERS,
+        timeout=60,
+    )
+    r.raise_for_status()
+    # Files are zipped
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    csv_name = [n for n in z.namelist() if n.endswith(".csv")][0]
+    df = pd.read_csv(z.open(csv_name))
+    df.columns = [c.strip() for c in df.columns]
     return df
+
+# ── Parse ERCOT DAM LMP CSV ───────────────────────────────────
+def parse_lmp(df_raw: pd.DataFrame, delivery_date: str) -> pd.DataFrame:
+    # Typical columns: DeliveryDate, HourEnding, BusName, LMP, ...
+    df = df_raw.copy()
+    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+    # Normalize column names
+    col_map = {
+        "deliverydate": "delivery_date",
+        "hourending":   "delivery_hour",
+        "busname":      "hub",
+        "lmp":          "lmp",
+    }
+    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+
+    if "delivery_date" not in df.columns:
+        df["delivery_date"] = delivery_date
+    if "delivery_hour" in df.columns:
+        df["delivery_hour"] = df["delivery_hour"].astype(str).str.replace(":00", "").str.strip()
+        df["timestamp"] = pd.to_datetime(
+            df["delivery_date"].astype(str) + " " + df["delivery_hour"].astype(str).str.zfill(2) + ":00:00",
+            errors="coerce"
+        )
+    df["lmp"] = pd.to_numeric(df.get("lmp", 0), errors="coerce")
+    df["interval"] = 1
+    return df[["timestamp", "hub", "lmp", "delivery_date", "delivery_hour", "interval"]].dropna()
 
 # ── Save to Supabase ─────────────────────────────────────────
 def save_to_supabase(df: pd.DataFrame) -> int:
@@ -107,10 +126,12 @@ def repo_stats():
     except:
         return 0, "—", "—"
 
-# ── UI ────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════
+# UI
+# ════════════════════════════════════════════════════════════
 st.set_page_config(page_title="ERCOT LMP Agent", page_icon="⚡", layout="wide")
 st.title("⚡ ERCOT LMP Data Repository")
-st.caption("DAM Hourly LMPs (NP4-183-CD) · Powered by Supabase")
+st.caption("DAM Hourly LMPs · ERCOT Data Access Portal · Powered by Supabase")
 
 total, min_d, max_d = repo_stats()
 c1, c2, c3 = st.columns(3)
@@ -122,24 +143,38 @@ st.divider()
 # ── Sidebar ───────────────────────────────────────────────────
 with st.sidebar:
     st.header("📥 Fetch & Store")
-    fetch_date = st.date_input("Delivery Date", value=datetime.today() - timedelta(days=1))
 
-    if st.button("🔄 Fetch from ERCOT & Save", type="primary", use_container_width=True):
-        with st.spinner("Fetching from ERCOT..."):
+    # Load available files from ERCOT
+    if st.button("🔍 Load Available Files", use_container_width=True):
+        with st.spinner("Fetching file list from ERCOT..."):
             try:
-                df_new = fetch_ercot(str(fetch_date))
-                n = save_to_supabase(df_new)
-                st.success(f"✅ Saved {n} records")
-                st.rerun()
+                files = get_file_list()
+                st.session_state["files"] = files
             except Exception as e:
                 st.error(f"Error: {e}")
 
+    if "files" in st.session_state:
+        files = st.session_state["files"]
+        files["label"] = files["posted"].str[:10]
+        selected = st.selectbox("Select Date to Fetch", files["label"].tolist())
+        doc_id = files[files["label"] == selected]["doc_id"].values[0]
+
+        if st.button("⬇️ Fetch & Save to Supabase", type="primary", use_container_width=True):
+            with st.spinner(f"Downloading {selected}..."):
+                try:
+                    df_raw  = download_csv(doc_id)
+                    df_parsed = parse_lmp(df_raw, selected)
+                    n = save_to_supabase(df_parsed)
+                    st.success(f"✅ Saved {n} records for {selected}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
     st.divider()
-    st.header("📊 Query")
+    st.header("📊 Query Repository")
     q_start  = st.date_input("From", value=datetime.today() - timedelta(days=7))
     q_end    = st.date_input("To",   value=datetime.today() - timedelta(days=1))
 
-    # Hub filter — populated from what's actually in the DB
     try:
         hubs_in_db = sorted(set(
             r["hub"] for r in supabase.table("ercot_lmp").select("hub").execute().data
@@ -147,7 +182,7 @@ with st.sidebar:
     except:
         hubs_in_db = []
 
-    q_hubs = st.multiselect("Filter by Bus/Hub", hubs_in_db, default=hubs_in_db[:5] if hubs_in_db else [])
+    q_hubs   = st.multiselect("Filter by Bus", hubs_in_db, default=hubs_in_db[:5] if hubs_in_db else [])
     load_btn = st.button("📈 Load Chart", use_container_width=True)
 
 # ── Charts ────────────────────────────────────────────────────
@@ -155,7 +190,7 @@ if load_btn:
     with st.spinner("Loading from Supabase..."):
         df = load_from_supabase(q_hubs, str(q_start), str(q_end))
     if df.empty:
-        st.warning("No data found. Fetch data first.")
+        st.warning("No data found. Fetch data first using the sidebar.")
     else:
         st.session_state["df"] = df
 
@@ -167,21 +202,18 @@ if "df" in st.session_state:
         st.plotly_chart(px.line(df, x="timestamp", y="lmp", color="hub",
             title="DAM Hourly LMP ($/MWh)", template="plotly_dark",
             labels={"lmp": "LMP ($/MWh)", "timestamp": ""}), use_container_width=True)
-
     with tab2:
         daily = df.groupby(["delivery_date", "hub"])["lmp"].mean().reset_index()
         st.plotly_chart(px.bar(daily, x="delivery_date", y="lmp", color="hub",
-            barmode="group", title="Daily Average LMP by Bus",
+            barmode="group", title="Daily Average LMP",
             template="plotly_dark"), use_container_width=True)
-
     with tab3:
         pivot = df.pivot_table(index="hub", columns="delivery_date", values="lmp", aggfunc="mean")
         st.plotly_chart(px.imshow(pivot, color_continuous_scale="RdYlGn_r",
             title="LMP Heatmap ($/MWh)", template="plotly_dark"), use_container_width=True)
-
     with tab4:
         st.dataframe(df.sort_values("timestamp", ascending=False), use_container_width=True)
         st.download_button("⬇️ Download CSV",
             df.to_csv(index=False).encode(), "ercot_lmp.csv", "text/csv")
 else:
-    st.info("👈 Set date range in the sidebar, then click Load Chart")
+    st.info("👈 Click 'Load Available Files' in the sidebar to get started")
