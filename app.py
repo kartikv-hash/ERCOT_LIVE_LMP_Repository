@@ -17,6 +17,7 @@ supabase = get_supabase()
 
 # ── ERCOT Data Access Portal ─────────────────────────────────
 # No API key needed — public CSV downloads
+HEADERS   = {"User-Agent": "Mozilla/5.0"}
 ERCOT_DAP = "https://www.ercot.com/misapp/GetReports.do"
 
 def get_file_list() -> pd.DataFrame:
