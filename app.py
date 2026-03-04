@@ -16,7 +16,7 @@ HUBS = ["HB_BUSAVG", "HB_HOUSTON", "HB_NORTH", "HB_PAN", "HB_SOUTH", "HB_WEST"]
 
 # ── ERCOT Fetch (subscription key only) ──────────────────────
 def fetch_ercot(delivery_date: str) -> pd.DataFrame:
-    url = "https://apiexplorer.ercot.com/api/public-reports/np6-905-cd/spp_node_zone_hub"
+    url = "https://api.ercot.com/api/public-reports/np6-905-cd/spp_node_zone_hub"
     headers = {"Ocp-Apim-Subscription-Key": st.secrets["ERCOT_API_KEY"]}
     params  = {
         "deliveryDateFrom": delivery_date,
@@ -24,10 +24,6 @@ def fetch_ercot(delivery_date: str) -> pd.DataFrame:
         "size": 10000,
     }
     r = requests.get(url, headers=headers, params=params, timeout=30)
-
-    # Show raw response in sidebar for debugging
-    st.sidebar.code(f"Status: {r.status_code}\n\n{r.text[:500]}")
-
     r.raise_for_status()
     rows = []
     for rec in r.json().get("data", []):
