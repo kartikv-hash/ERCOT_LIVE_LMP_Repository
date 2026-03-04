@@ -155,7 +155,14 @@ with st.sidebar:
 
     if "files" in st.session_state:
         files = st.session_state["files"]
-        files["label"] = files["posted"].str[:10]
+        st.sidebar.code(str(files.columns.tolist()) + "\n" + str(files.head(2)))
+        # Use whatever columns exist
+        if "posted" in files.columns:
+            files["label"] = files["posted"].str[:10]
+        else:
+            files["label"] = files.iloc[:, 1].astype(str).str[:10]
+        if "doc_id" not in files.columns:
+            files["doc_id"] = files.iloc[:, 0]
         selected = st.selectbox("Select Date to Fetch", files["label"].tolist())
         doc_id = files[files["label"] == selected]["doc_id"].values[0]
 
