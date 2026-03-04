@@ -24,7 +24,7 @@ HUBS = ["HB_BUSAVG", "HB_HOUSTON", "HB_NORTH", "HB_PAN", "HB_SOUTH", "HB_WEST"]
 def get_ercot_token() -> str:
     """Get a Bearer token from ERCOT using username + password."""
     r = requests.post(
-        "https://ercotb2c.b2clogin.com/ercotb2c.onmicrosoft.com/B2C_1_SIGNIN/oauth2/v2.0/token",
+        "https://ercotb2c.b2clogin.com/ercotb2c.onmicrosoft.com/B2C_1_ROPC_Auth/oauth2/v2.0/token",
         data={
             "grant_type":    "password",
             "username":      st.secrets["ERCOT_USERNAME"],
@@ -36,7 +36,7 @@ def get_ercot_token() -> str:
         timeout=30,
     )
     r.raise_for_status()
-    return r.json()["access_token"]
+    return r.json()["id_token"]
 
 def fetch_ercot(delivery_date: str) -> pd.DataFrame:
     url = "https://api.ercot.com/api/public-reports/np6-905-cd/spp_node_zone_hub"
